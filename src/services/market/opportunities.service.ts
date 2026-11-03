@@ -26,7 +26,7 @@ const defaultUniverse: UniverseItem[] = [
 
 const macroSymbols = { ibov: '^BVSP', vix: '^VIX', usdBrl: 'BRL=X' } as const;
 
-const baseAllocation: Record<Profile, Record<AssetClass, number>> = {
+export const baseAllocation: Record<Profile, Record<AssetClass, number>> = {
   conservador: { renda_fixa: 70, acoes_br: 10, fiis: 15, internacional: 5, cripto: 0 },
   moderado: { renda_fixa: 40, acoes_br: 25, fiis: 20, internacional: 12, cripto: 3 },
   arrojado: { renda_fixa: 20, acoes_br: 35, fiis: 15, internacional: 20, cripto: 10 },

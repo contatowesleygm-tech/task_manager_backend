@@ -336,3 +336,14 @@ export async function compareFiis(tickers: string[], years: number, amount: numb
 export async function warmFiiData() {
   await getCvmFiiData();
 }
+
+// Análise completa de um único FII, usada na avaliação de carteira.
+export async function analyzeFiiForPortfolio(ticker: string, years = 5) {
+  const [cdi, ipca] = await Promise.all([getBcbMonthlyReturns(4391), getBcbMonthlyReturns(433)]);
+  const analysis = await analyzeFund(ticker, cdi, ipca, new Date());
+  const windowMonths = Math.min(years * 12, analysis.history.months);
+  const { stats, scored } = scoreFund(analysis, windowMonths, cdi, ipca);
+  const { _points, _stats, ...fund } = analysis;
+  void _points; void _stats;
+  return { fund, scored, windowMonths, stats: publicStats(stats) };
+}

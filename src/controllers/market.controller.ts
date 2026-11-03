@@ -3,7 +3,102 @@ import { z } from 'zod';
 import { BacktestInputError, earliestStartYear, getBacktest } from '../services/market/backtest.service';
 import { compareFiis, defaultFiiTickers, FiiInputError } from '../services/market/fii-compare.service';
 import { getAssetAnalysis, getMacro, getOpportunities } from '../services/market/opportunities.service';
+import {
+  analyzeFiiPortfolio, getFixedIncomeBenchmarks, PortfolioInputError, simulateSwitch,
+} from '../services/market/portfolio-rebalance.service';
 import { assetClasses, profiles } from '../services/market/scoring';
+
+const rateQuery = {
+  cdi_percent: z.coerce.number().min(50).max(200).default(100),
+  lci_percent: z.coerce.number().min(50).max(150).default(90),
+  prazo_meses: z.coerce.number().int().min(1).max(120).default(24),
+};
+const benchmarksQuery = z.object(rateQuery);
+const portfolioQuery = z.object({
+  ...rateQuery,
+  perfil: z.enum(profiles).default('moderado'),
+  anos: z.coerce.number().int().min(1).max(10).default(5),
+  meta_renda_fixa: z.coerce.number().min(0).max(100).optional(),
+});
+const switchQuery = portfolioQuery.extend({
+  vender: z.string().max(300).optional(),
+  meses: z.string().max(40).default('12,24,60'),
+});
+
+// Formato: "HGLG11:100,KNRI11:50" (percentual vendido opcional; padrão 100).
+function parseSales(value: string | undefined): Array<{ ticker: string; pct: number }> | undefined {
+  if (!value) return [];
+  const sales = value.split(',').map(part => {
+    const [ticker, percent] = part.trim().toUpperCase().split(':');
+    return { ticker, pct: percent === undefined ? 100 : Number(percent) };
+  });
+  const valid = sales.every(sale => /^[A-Z0-9]{4,7}$/.test(sale.ticker) && sale.pct > 0 && sale.pct <= 100);
+  return valid ? sales : undefined;
+}
+
+function handlePortfolioError(error: unknown, res: Response, next: NextFunction) {
+  if (error instanceof PortfolioInputError) {
+    res.status(404).json({ error: error.message });
+    return;
+  }
+  if (error instanceof Error) {
+    res.status(502).json({ error: error.message });
+    return;
+  }
+  next(error);
+}
+
+export async function getFixedIncomeRates(req: Request, res: Response, next: NextFunction) {
+  const query = benchmarksQuery.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: 'Parâmetros inválidos', details: query.error.flatten() });
+    return;
+  }
+  try {
+    res.json(await getFixedIncomeBenchmarks({
+      cdbPercent: query.data.cdi_percent, lciPercent: query.data.lci_percent, months: query.data.prazo_meses,
+    }));
+  } catch (error) {
+    handlePortfolioError(error, res, next);
+  }
+}
+
+export async function analyzePortfolioFiis(req: Request, res: Response, next: NextFunction) {
+  const query = portfolioQuery.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: 'Parâmetros inválidos', details: query.error.flatten() });
+    return;
+  }
+  try {
+    res.json(await analyzeFiiPortfolio(req.user!.id, query.data.perfil, {
+      cdbPercent: query.data.cdi_percent, lciPercent: query.data.lci_percent, months: query.data.prazo_meses,
+      years: query.data.anos, fixedIncomeTargetPct: query.data.meta_renda_fixa,
+    }));
+  } catch (error) {
+    handlePortfolioError(error, res, next);
+  }
+}
+
+export async function simulatePortfolioSwitch(req: Request, res: Response, next: NextFunction) {
+  const query = switchQuery.safeParse(req.query);
+  const sales = query.success ? parseSales(query.data.vender) : undefined;
+  const horizons = query.success
+    ? query.data.meses.split(',').map(item => Number(item.trim()))
+    : [];
+  if (!query.success || !sales || !horizons.length || horizons.some(item => !Number.isInteger(item) || item < 1 || item > 120)) {
+    res.status(400).json({ error: 'Parâmetros inválidos. Use vender=HGLG11:100,KNRI11:50 e meses=12,24,60' });
+    return;
+  }
+  try {
+    res.json(await simulateSwitch(
+      req.user!.id, query.data.perfil,
+      { cdbPercent: query.data.cdi_percent, lciPercent: query.data.lci_percent, months: query.data.prazo_meses, years: query.data.anos },
+      { sales, horizons }
+    ));
+  } catch (error) {
+    handlePortfolioError(error, res, next);
+  }
+}
 
 const fiiQuery = z.object({
   tickers: z.string().max(200).optional(),
