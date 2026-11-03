@@ -1,5 +1,6 @@
 import { pool } from '../../config/database';
 import { getBcbMacro } from './bcb.service';
+import { warmFiiData } from './fii-compare.service';
 import { periodReturn, sma } from './indicators';
 import {
   assetClasses, classLabels, computeMetrics, scoreAsset, scoreClass, scoreFixedIncome,
@@ -204,6 +205,7 @@ export async function getAssetAnalysis(ticker: string, assetClass: AssetClass, p
 export async function refreshMarketData() {
   await getMacro();
   await loadMetrics(defaultUniverse);
+  await warmFiiData();
 }
 
 export function startMarketRefresh(intervalMs = 60 * 60 * 1000) {

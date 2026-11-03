@@ -1,8 +1,15 @@
 import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { BacktestInputError, earliestStartYear, getBacktest } from '../services/market/backtest.service';
+import { compareFiis, defaultFiiTickers, FiiInputError } from '../services/market/fii-compare.service';
 import { getAssetAnalysis, getMacro, getOpportunities } from '../services/market/opportunities.service';
 import { assetClasses, profiles } from '../services/market/scoring';
+
+const fiiQuery = z.object({
+  tickers: z.string().max(200).optional(),
+  anos: z.coerce.number().int().min(1).max(10).default(5),
+  valor: z.coerce.number().positive().max(10_000_000_000).default(10000),
+});
 
 const backtestQuery = z.object({
   valor: z.coerce.number().positive().max(10_000_000_000),
@@ -45,6 +52,35 @@ export async function listOpportunities(req: Request, res: Response, next: NextF
   try {
     res.json(await getOpportunities(query.data.perfil, query.data.carteira === 'true' ? req.user!.id : undefined));
   } catch (error) {
+    next(error);
+  }
+}
+
+export async function compareMarketFiis(req: Request, res: Response, next: NextFunction) {
+  const query = fiiQuery.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: 'Parâmetros inválidos', details: query.error.flatten() });
+    return;
+  }
+  const tickers = query.data.tickers
+    ? [...new Set(query.data.tickers.split(',').map(item => item.trim().toUpperCase()).filter(Boolean))]
+    : defaultFiiTickers;
+  if (tickers.length > 12 || tickers.some(ticker => !/^[A-Z]{4}1[0-9]$/.test(ticker))) {
+    res.status(400).json({ error: 'Informe de 1 a 12 tickers de FIIs válidos, por exemplo HGLG11,KNRI11' });
+    return;
+  }
+
+  try {
+    res.json(await compareFiis(tickers, query.data.anos, query.data.valor));
+  } catch (error) {
+    if (error instanceof FiiInputError) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    if (error instanceof Error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
     next(error);
   }
 }
