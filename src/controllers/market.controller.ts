@@ -1,7 +1,26 @@
 import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
+import { BacktestInputError, earliestStartYear, getBacktest } from '../services/market/backtest.service';
 import { getAssetAnalysis, getMacro, getOpportunities } from '../services/market/opportunities.service';
 import { assetClasses, profiles } from '../services/market/scoring';
+
+const backtestQuery = z.object({
+  valor: z.coerce.number().positive().max(10_000_000_000),
+  ano_inicial: z.coerce.number().int().optional(),
+  anos: z.coerce.number().int().min(1).max(30).optional(),
+  aporte_mensal: z.coerce.number().min(0).max(1_000_000_000).default(0),
+  reajustar_aporte_ipca: z.enum(['true', 'false']).default('false'),
+  perfil: z.enum(profiles).default('moderado'),
+  carteira: z.string().max(200).optional(),
+  ativos: z.string().max(200).optional(),
+});
+
+// Formato: "cdi:40,ibovespa:30,sp500:30"
+function parseWeights(value: string): Record<string, number> | undefined {
+  const entries = value.split(',').map(part => part.trim().split(':'));
+  if (entries.some(([id, weight]) => !/^[a-z0-9_]+$/.test(id ?? '') || !(Number(weight) > 0))) return undefined;
+  return Object.fromEntries(entries.map(([id, weight]) => [id, Number(weight)]));
+}
 
 const opportunitiesQuery = z.object({
   perfil: z.enum(profiles).default('moderado'),
@@ -26,6 +45,48 @@ export async function listOpportunities(req: Request, res: Response, next: NextF
   try {
     res.json(await getOpportunities(query.data.perfil, query.data.carteira === 'true' ? req.user!.id : undefined));
   } catch (error) {
+    next(error);
+  }
+}
+
+export async function runMarketBacktest(req: Request, res: Response, next: NextFunction) {
+  const query = backtestQuery.safeParse(req.query);
+  if (!query.success) {
+    res.status(400).json({ error: 'Parâmetros inválidos', details: query.error.flatten() });
+    return;
+  }
+  const data = query.data;
+  const currentYear = new Date().getFullYear();
+  const startYear = data.ano_inicial ?? currentYear - (data.anos ?? 10);
+  if (startYear < earliestStartYear || startYear >= currentYear) {
+    res.status(400).json({ error: `ano_inicial deve estar entre ${earliestStartYear} e ${currentYear - 1}` });
+    return;
+  }
+  const portfolio = data.carteira ? parseWeights(data.carteira) : undefined;
+  if (data.carteira && !portfolio) {
+    res.status(400).json({ error: 'carteira inválida. Use o formato cdi:40,ibovespa:30,sp500:30' });
+    return;
+  }
+
+  try {
+    res.json(await getBacktest({
+      initialAmount: data.valor,
+      startYear,
+      monthlyContribution: data.aporte_mensal,
+      indexContributionToInflation: data.reajustar_aporte_ipca === 'true',
+      profile: data.perfil,
+      portfolio,
+      assetFilter: data.ativos?.split(',').map(item => item.trim()).filter(Boolean),
+    }));
+  } catch (error) {
+    if (error instanceof BacktestInputError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error instanceof Error) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
     next(error);
   }
 }
