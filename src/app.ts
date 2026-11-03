@@ -17,6 +17,7 @@ import englishStudyRoutes from "./routes/english-study.routes";
 import expensesRoutes from "./routes/expenses.routes";
 import dividendsRoutes from "./routes/dividends.routes";
 import subscriptionsRoutes from "./routes/subscriptions.routes";
+import marketRoutes from "./routes/market.routes";
 
 export const app = express();
 
@@ -61,6 +62,7 @@ app.use("/api/activity", activityRoutes);
 app.use("/api/english-study", englishStudyRoutes);
 app.use("/api/expenses", expensesRoutes);
 app.use("/api/dividends", dividendsRoutes);
+app.use("/api/market", marketRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Rota não encontrada" });
