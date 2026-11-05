@@ -50,8 +50,9 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-function parseId(value: string): number | undefined {
-  const id = Number(value);
+function parseId(value: string | string[]): number | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const id = Number(raw);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 

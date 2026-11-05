@@ -55,8 +55,9 @@ const updateStepSchema = z
     message: 'Informe ao menos um campo para atualizar.',
   });
 
-function parseId(value: string): number | undefined {
-  const id = Number(value);
+function parseId(value: string | string[]): number | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const id = Number(raw);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 

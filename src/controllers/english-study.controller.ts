@@ -80,8 +80,9 @@ const goalSchema = z.object({
   daily_goal_minutes: z.number().int().min(1).max(1440),
 });
 
-function parseId(value: string): number | undefined {
-  const id = Number(value);
+function parseId(value: string | string[]): number | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const id = Number(raw);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 

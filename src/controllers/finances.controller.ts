@@ -60,8 +60,9 @@ const updateLiabilitySchema = createLiabilitySchema.partial().refine(data => Obj
   message: 'Informe ao menos um campo para atualizar.',
 });
 
-function parseId(value: string): number | undefined {
-  const id = Number(value);
+function parseId(value: string | string[]): number | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const id = Number(raw);
   return Number.isSafeInteger(id) && id > 0 ? id : undefined;
 }
 
@@ -122,10 +123,16 @@ export async function getFinanceSummary(req: Request, res: Response, next: NextF
        WHERE user_id = $1`,
       [req.user!.id]
     ), pool.query(
-      `SELECT COALESCE(SUM(quantity * average_price), 0)::float8 AS invested_total,
-              COALESCE(SUM(quantity * COALESCE(current_price, average_price)), 0)::float8 AS current_total
+      `SELECT COALESCE(SUM(
+                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(applied_amount, quantity * average_price)
+                     ELSE quantity * average_price END
+              ), 0)::float8 AS invested_total,
+              COALESCE(SUM(
+                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(current_price, applied_amount, quantity * average_price)
+                     ELSE quantity * COALESCE(current_price, average_price) END
+              ), 0)::float8 AS current_total
        FROM public.dividend_holdings
-       WHERE user_id = $1 AND is_active`,
+       WHERE user_id = $1`,
       [req.user!.id]
     )]);
     const row = accountsResult.rows[0];
