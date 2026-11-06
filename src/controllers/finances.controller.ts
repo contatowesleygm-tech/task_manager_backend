@@ -25,6 +25,7 @@ const updateAccountSchema = z.object({
   account_type: z.enum(accountTypes).optional(),
   currency: z.enum(currencies).optional(),
   balance: z.number().finite().min(-maxMoney).max(maxMoney).optional(),
+  is_active: z.boolean().optional(),
   notes: z.string().trim().max(2000).nullable().optional(),
 }).refine(data => Object.keys(data).length > 0, {
   message: 'Informe ao menos um campo para atualizar.',
@@ -91,9 +92,9 @@ async function presentAccounts(rows: Array<Record<string, any>>) {
 export async function getFinanceSummary(req: Request, res: Response, next: NextFunction) {
   try {
     const [accountsResult, assetsResult, liabilitiesResult, portfolioResult] = await Promise.all([pool.query(
-      `SELECT COALESCE(SUM(balance) FILTER (WHERE currency = 'BRL'), 0)::text AS brl_total,
-              COALESCE(SUM(balance) FILTER (WHERE currency = 'USD'), 0)::text AS usd_total,
-              BOOL_OR(currency = 'USD') AS has_usd,
+      `SELECT COALESCE(SUM(balance) FILTER (WHERE currency = 'BRL' AND is_active), 0)::text AS brl_total,
+              COALESCE(SUM(balance) FILTER (WHERE currency = 'USD' AND is_active), 0)::text AS usd_total,
+              BOOL_OR(currency = 'USD' AND is_active) AS has_usd,
               COUNT(*)::int AS accounts_count,
               COUNT(*) FILTER (WHERE account_type = 'investimento')::int AS investments_count
        FROM public.financial_accounts
@@ -124,13 +125,17 @@ export async function getFinanceSummary(req: Request, res: Response, next: NextF
       [req.user!.id]
     ), pool.query(
       `SELECT COALESCE(SUM(
-                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(applied_amount, quantity * average_price)
+                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), quantity * average_price, 0)
                      ELSE quantity * average_price END
               ), 0)::float8 AS invested_total,
               COALESCE(SUM(
-                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(current_price, applied_amount, quantity * average_price)
+                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), NULLIF(current_price, 0), quantity * average_price, 0)
                      ELSE quantity * COALESCE(current_price, average_price) END
-              ), 0)::float8 AS current_total
+              ) FILTER (WHERE is_active), 0)::float8 AS active_current_total,
+              COALESCE(SUM(
+                CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), NULLIF(current_price, 0), quantity * average_price, 0)
+                     ELSE quantity * COALESCE(current_price, average_price) END
+              ), 0)::float8 AS all_current_total
        FROM public.dividend_holdings
        WHERE user_id = $1`,
       [req.user!.id]
@@ -148,7 +153,8 @@ export async function getFinanceSummary(req: Request, res: Response, next: NextF
       + (exchangeRate ? usdAssetTotal * exchangeRate.rate : 0);
     const accountBalancesBrl = Number(row.brl_total)
       + (exchangeRate ? usdAccountTotal * exchangeRate.rate : 0);
-    const investmentPortfolioBrl = Number(portfolio.current_total);
+    const investmentPortfolioBrl = Number(portfolio.all_current_total);
+    const activeInvestmentPortfolioBrl = Number(portfolio.active_current_total);
     const assetsTotalBrl = accountBalancesBrl + registeredAssetsTotalBrl + investmentPortfolioBrl;
     const liabilitiesTotalBrl = Number(liabilities.brl_total)
       + (exchangeRate ? usdLiabilityTotal * exchangeRate.rate : 0);
@@ -171,7 +177,8 @@ export async function getFinanceSummary(req: Request, res: Response, next: NextF
         properties_count: assets.properties_count,
         registered_assets_total_brl: Number(registeredAssetsTotalBrl.toFixed(2)),
         investment_portfolio_invested_brl: Number(Number(portfolio.invested_total).toFixed(2)),
-        investment_portfolio_value_brl: Number(investmentPortfolioBrl.toFixed(2)),
+        investment_portfolio_value_brl: Number(activeInvestmentPortfolioBrl.toFixed(2)),
+        investment_portfolio_total_value_brl: Number(investmentPortfolioBrl.toFixed(2)),
         investment_portfolio_profit_loss_brl: Number((investmentPortfolioBrl - Number(portfolio.invested_total)).toFixed(2)),
         assets_total_brl: Number(assetsTotalBrl.toFixed(2)),
         liabilities_count: liabilities.liabilities_count,
@@ -194,7 +201,7 @@ export async function listFinancialAccounts(req: Request, res: Response, next: N
     const result = await pool.query(
       `SELECT id, institution, account_name, account_type, balance::numeric(14, 2)::text AS balance,
               currency,
-              notes, created_at, updated_at
+              is_active, notes, created_at, updated_at
        FROM public.financial_accounts
        WHERE user_id = $1
        ORDER BY institution, account_name, id`,
@@ -220,7 +227,7 @@ export async function createFinancialAccount(req: Request, res: Response, next: 
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, institution, account_name, account_type, balance::numeric(14, 2)::text AS balance,
                  currency,
-                 notes, created_at, updated_at`,
+                 is_active, notes, created_at, updated_at`,
       [req.user!.id, data.institution, data.account_name, data.account_type, data.balance, data.currency, data.notes ?? null]
     );
     const presented = await presentAccounts(result.rows);
@@ -251,15 +258,16 @@ export async function updateFinancialAccount(req: Request, res: Response, next: 
            balance = COALESCE($6, balance),
            currency = COALESCE($7, currency),
            notes = CASE WHEN $8::boolean THEN $9::text ELSE notes END,
+           is_active = COALESCE($10, is_active),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1 AND user_id = $2
        RETURNING id, institution, account_name, account_type, balance::numeric(14, 2)::text AS balance,
                  currency,
-                 notes, created_at, updated_at`,
+                 is_active, notes, created_at, updated_at`,
       [
         id, req.user!.id, data.institution ?? null, data.account_name ?? null,
         data.account_type ?? null, data.balance ?? null, data.currency ?? null,
-        Object.hasOwn(data, 'notes'), data.notes ?? null,
+        Object.hasOwn(data, 'notes'), data.notes ?? null, data.is_active ?? null,
       ]
     );
     if (!result.rowCount) {

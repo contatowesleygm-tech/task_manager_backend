@@ -12,9 +12,9 @@ import {
   type AssetType,
 } from '../services/investment-types';
 import { getMarketQuote } from '../services/quote.service';
+import { getBcbCdiRate } from '../services/market/bcb.service';
 
 const fiiSegments = ['papel', 'tijolo', 'hibrido'] as const;
-const incomeTaxRate = 0.15;
 const intervalByFrequency: Record<(typeof frequencies)[number], number> = {
   mensal: 1, trimestral: 3, semestral: 6, anual: 12,
 };
@@ -25,12 +25,12 @@ const columns = `id, ticker, name, asset_type, fii_segment, quantity::float8 AS 
                  applied_amount::float8 AS applied_amount,
                  investment_date::text AS investment_date,
                  auto_price, price_updated_at,
-                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(applied_amount, quantity * average_price)
+                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), quantity * average_price, 0)
                             ELSE quantity * average_price END, 2)::float8 AS invested_amount,
-                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(current_price, applied_amount, quantity * average_price)
+                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), NULLIF(current_price, 0), quantity * average_price, 0)
                             ELSE quantity * COALESCE(current_price, average_price) END, 2)::float8 AS current_value,
-                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(current_price, applied_amount, quantity * average_price)
-                                      - COALESCE(applied_amount, quantity * average_price)
+                 ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), NULLIF(current_price, 0), quantity * average_price, 0)
+                                      - COALESCE(NULLIF(applied_amount, 0), quantity * average_price, 0)
                             ELSE quantity * (COALESCE(current_price, average_price) - average_price) END, 2)::float8 AS profit_loss,
                  payment_day, is_active, notes, created_at, updated_at`;
 
@@ -149,6 +149,7 @@ type Holding = {
 };
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const roundRate = (value: number) => Math.round(value * 10_000) / 10_000;
 
 function parseId(value: string | string[]): number | undefined {
   const raw = Array.isArray(value) ? value[0] : value;
@@ -184,28 +185,37 @@ function isFixedIncomeHolding(holding: Holding): boolean {
 }
 
 function monthlyFixedIncomeAmount(holding: Holding, year: number, month: number, cdiRate: number): {
-  gross_amount: number; tax_amount: number; net_amount: number;
+  gross_amount: number; tax_amount: number; net_amount: number; income_tax_rate: number;
 } {
   if (!isFixedIncomeHolding(holding)) {
-    return { gross_amount: 0, tax_amount: 0, net_amount: 0 };
+    return { gross_amount: 0, tax_amount: 0, net_amount: 0, income_tax_rate: 0 };
   }
   const principal = Number(holding.applied_amount ?? 0);
-  const annualRate = (Number(holding.cdi_percent) / 100) * (cdiRate / 100);
+  const cdiFraction = Number(holding.cdi_percent) / 100;
+  const monthlyEffectiveRate = Math.pow(1 + cdiRate / 100, cdiFraction / 12) - 1;
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const investmentDate = fixedIncomeInvestmentDate(holding.investment_date)!;
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   if (investmentDate.getTime() >= monthStart.getTime() + daysInMonth * 86_400_000) {
-    return { gross_amount: 0, tax_amount: 0, net_amount: 0 };
+    return { gross_amount: 0, tax_amount: 0, net_amount: 0, income_tax_rate: 0 };
   }
   const effectiveStart = investmentDate > monthStart ? investmentDate : monthStart;
   const activeDays = daysInMonth - effectiveStart.getUTCDate() + 1;
   const fraction = Math.min(1, activeDays / daysInMonth);
-  const gross = principal * annualRate * fraction / 12;
+  const gross = principal * (Math.pow(1 + monthlyEffectiveRate, fraction) - 1);
+  const paymentDay = Math.min(holding.payment_day || 15, daysInMonth);
+  const paymentDate = new Date(Date.UTC(year, month - 1, paymentDay));
+  const holdingDays = Math.max(0, Math.floor((paymentDate.getTime() - investmentDate.getTime()) / 86_400_000));
+  const incomeTaxRate = holdingDays <= 180 ? 0.225
+    : holdingDays <= 360 ? 0.20
+      : holdingDays <= 720 ? 0.175
+        : 0.15;
   const tax = gross * incomeTaxRate;
   return {
     gross_amount: round2(gross),
     tax_amount: round2(tax),
     net_amount: round2(gross - tax),
+    income_tax_rate: incomeTaxRate,
   };
 }
 
@@ -219,6 +229,21 @@ function hasAutoQuote(assetType: string) {
 
 export function getDividendAssetTypes(_req: Request, res: Response) {
   res.json({ data: catalog() });
+}
+
+export async function getDividendCdiRate(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const cdi = await getBcbCdiRate();
+    res.json({
+      data: {
+        rate: cdi.rate,
+        reference_date: cdi.referenceDate,
+        source: 'Banco Central do Brasil (SGS 4389)',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 }
 
 export async function listDividendHoldings(req: Request, res: Response, next: NextFunction) {
@@ -288,6 +313,7 @@ export async function getDividendProjection(req: Request, res: Response, next: N
         quantity?: number; dividend_per_share?: number; cdi_percent?: number | null;
         applied_amount?: number | null; investment_date?: string | null;
         gross_amount: number; tax_amount: number; net_amount: number; amount: number; payment_date: string;
+        income_tax_rate: number;
       }> = holdings.flatMap(h => {
         if (isFixedIncomeHolding(h)) {
           const fixedIncome = monthlyFixedIncomeAmount(h, year, month, cdiRate);
@@ -305,6 +331,7 @@ export async function getDividendProjection(req: Request, res: Response, next: N
             tax_amount: fixedIncome.tax_amount,
             net_amount: fixedIncome.net_amount,
             amount: fixedIncome.net_amount,
+            income_tax_rate: fixedIncome.income_tax_rate,
             payment_date: `${monthLabel(year, month)}-${String(Math.min(h.payment_day || 15, lastDay)).padStart(2, '0')}`,
           }];
         }
@@ -325,6 +352,7 @@ export async function getDividendProjection(req: Request, res: Response, next: N
           tax_amount: 0,
           net_amount: grossAmount,
           amount: grossAmount,
+          income_tax_rate: 0,
           payment_date: `${monthLabel(year, month)}-${String(Math.min(h.payment_day, lastDay)).padStart(2, '0')}`,
         }];
       });
@@ -332,10 +360,12 @@ export async function getDividendProjection(req: Request, res: Response, next: N
       const grossTotal = round2(items.reduce((sum, i) => sum + i.gross_amount, 0));
       const taxTotal = round2(items.reduce((sum, i) => sum + i.tax_amount, 0));
       const netTotal = round2(items.reduce((sum, i) => sum + i.net_amount, 0));
+      const monthIncomeTaxRate = grossTotal > 0 ? roundRate(taxTotal / grossTotal) : 0;
       return {
         month: monthLabel(year, month),
         gross_total: grossTotal,
         tax_total: taxTotal,
+        income_tax_rate: monthIncomeTaxRate,
         total: netTotal,
         net_total: netTotal,
         items,
@@ -345,12 +375,13 @@ export async function getDividendProjection(req: Request, res: Response, next: N
     const periodGrossTotal = round2(months.reduce((sum, m) => sum + m.gross_total, 0));
     const periodTaxTotal = round2(months.reduce((sum, m) => sum + m.tax_total, 0));
     const periodNetTotal = round2(months.reduce((sum, m) => sum + m.net_total, 0));
+    const periodIncomeTaxRate = periodGrossTotal > 0 ? roundRate(periodTaxTotal / periodGrossTotal) : 0;
     res.json({
       data: {
         from: months[0].month,
         months_count: months.length,
         cdi_rate: cdiRate,
-        income_tax_rate: incomeTaxRate,
+        income_tax_rate: periodIncomeTaxRate,
         gross_total: periodGrossTotal,
         tax_total: periodTaxTotal,
         total: periodNetTotal,
@@ -409,9 +440,9 @@ export async function refreshDividendPrices(req: Request, res: Response, next: N
 }
 
 export async function getDividendPortfolio(req: Request, res: Response, next: NextFunction) {
-  const invested = `CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(applied_amount, quantity * average_price)
+  const invested = `CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), quantity * average_price, 0)
                           ELSE quantity * average_price END`;
-  const value = `CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(current_price, applied_amount, quantity * average_price)
+  const value = `CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), NULLIF(current_price, 0), quantity * average_price, 0)
                        ELSE quantity * COALESCE(current_price, average_price) END`;
   try {
     const totals = await pool.query(
@@ -419,14 +450,14 @@ export async function getDividendPortfolio(req: Request, res: Response, next: Ne
               COALESCE(SUM(${invested}), 0)::float8 AS invested_total,
               COALESCE(SUM(${value}), 0)::float8 AS current_total,
               MAX(price_updated_at) AS prices_updated_at
-       FROM public.dividend_holdings WHERE user_id = $1`,
+       FROM public.dividend_holdings WHERE user_id = $1 AND is_active`,
       [req.user!.id]
     );
     const group = (column: string) => pool.query(
       `SELECT ${column} AS key, COUNT(*)::int AS holdings_count,
               COALESCE(SUM(${invested}), 0)::float8 AS invested_total,
               COALESCE(SUM(${value}), 0)::float8 AS current_total
-       FROM public.dividend_holdings WHERE user_id = $1
+       FROM public.dividend_holdings WHERE user_id = $1 AND is_active
        GROUP BY ${column} ORDER BY current_total DESC, key`,
       [req.user!.id]
     );

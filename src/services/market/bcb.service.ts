@@ -12,6 +12,7 @@ export type BcbMacro = {
 const series = { selic: 432, cdi: 4389, ipca12m: 13522 } as const;
 const cacheDurationMs = 6 * 60 * 60 * 1000;
 let cached: { value: BcbMacro; expiresAt: number } | undefined;
+let cachedCdi: { value: number; date: string; expiresAt: number } | undefined;
 
 async function lastValue(code: number): Promise<{ value: number; date: string }> {
   const response = await fetch(
@@ -27,6 +28,20 @@ async function lastValue(code: number): Promise<{ value: number; date: string }>
     throw new Error('O Banco Central retornou uma resposta inválida.');
   }
   return { value, date: point.data };
+}
+
+export async function getBcbCdiRate(): Promise<{ rate: number; referenceDate: string }> {
+  if (cachedCdi && cachedCdi.expiresAt > Date.now()) {
+    return { rate: cachedCdi.value, referenceDate: cachedCdi.date };
+  }
+  try {
+    const latest = await lastValue(series.cdi);
+    cachedCdi = { value: latest.value, date: latest.date, expiresAt: Date.now() + cacheDurationMs };
+    return { rate: latest.value, referenceDate: latest.date };
+  } catch (error) {
+    if (cachedCdi) return { rate: cachedCdi.value, referenceDate: cachedCdi.date };
+    throw error;
+  }
 }
 
 export async function getBcbMacro(): Promise<BcbMacro> {

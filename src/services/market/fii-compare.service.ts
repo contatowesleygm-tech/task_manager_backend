@@ -239,13 +239,21 @@ function scoreFund(analysis: Analysis, windowMonths: number, cdi: MonthlyReturns
   }
   score += clamp((0.2 - Math.abs(stats._raw.drawdown)) / 0.2, -1, 1) * 10;
   reasons.push(`Queda máxima de ${Math.abs(stats._raw.drawdown * 100).toFixed(1).replace('.', ',')}% na janela`);
-  if (stats._raw.volatility !== null) score += clamp((0.15 - stats._raw.volatility) / 0.1, -1, 1) * 5;
+  if (stats._raw.volatility !== null) {
+    score += clamp((0.15 - stats._raw.volatility) / 0.1, -1, 1) * 5;
+    reasons.push(`Volatilidade anualizada de ${(stats._raw.volatility * 100).toFixed(1).replace('.', ',')}% na janela`);
+  }
 
   const { paidMonths, cv24, distGrowth, pvp, fundAge } = analysis._stats;
   score += clamp((paidMonths - 0.9) / 0.1, -1, 1) * 8;
   if (paidMonths < 1) reasons.push(`Pagou rendimentos em ${(paidMonths * 100).toFixed(0)}% dos meses`);
   else reasons.push('Pagou rendimentos em todos os meses');
   if (cv24 !== null) score += cv24 < 0.1 ? 4 : cv24 > 0.3 ? -4 : 0;
+  if (cv24 !== null) {
+    reasons.push(`Variação mensal dos proventos em 24 meses: ${(cv24 * 100).toFixed(0)}% (menor tende a indicar maior regularidade)`);
+  } else {
+    reasons.push('Histórico de proventos insuficiente para medir a variação em 24 meses');
+  }
   if (distGrowth !== null) {
     score += distGrowth > 0.05 ? 6 : distGrowth > 0 ? 3 : -3;
     reasons.push(`Proventos ${distGrowth >= 0 ? 'cresceram' : 'caíram'} ${Math.abs(distGrowth * 100).toFixed(1).replace('.', ',')}% ao ano em 3 anos`);
@@ -254,6 +262,25 @@ function scoreFund(analysis: Analysis, windowMonths: number, cdi: MonthlyReturns
   reasons.push(`P/VP de ${pvp.toFixed(2).replace('.', ',')}`);
   score += fundAge >= 10 ? 6 : fundAge >= 5 ? 3 : fundAge < 3 ? -6 : 0;
   reasons.push(`${fundAge.toFixed(1).replace('.', ',')} anos de história`);
+  const netAssets = analysis.equity.net_assets;
+  if (netAssets !== null) {
+    if (netAssets < 100_000_000) {
+      score -= 8;
+      reasons.push(`Patrimônio líquido de R$ ${Math.round(netAssets).toLocaleString('pt-BR')}: porte pequeno, pode haver maior risco de liquidez`);
+    } else if (netAssets < 300_000_000) {
+      score -= 3;
+      reasons.push(`Patrimônio líquido de R$ ${Math.round(netAssets).toLocaleString('pt-BR')}: porte intermediário-baixo`);
+    } else if (netAssets >= 1_000_000_000) {
+      score += 5;
+      reasons.push(`Patrimônio líquido de R$ ${Math.round(netAssets).toLocaleString('pt-BR')}: maior escala patrimonial`);
+    } else {
+      score += 2;
+      reasons.push(`Patrimônio líquido de R$ ${Math.round(netAssets).toLocaleString('pt-BR')}`);
+    }
+  } else {
+    reasons.push('Patrimônio líquido não informado pela CVM');
+  }
+  reasons.push('Vacância não pontuada: a série padronizada da CVM consultada não fornece esse indicador para todos os fundos.');
 
   return { stats, scored: buildScored(score, reasons) };
 }

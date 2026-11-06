@@ -1,0 +1,2 @@
+ALTER TABLE public.financial_accounts
+  ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;

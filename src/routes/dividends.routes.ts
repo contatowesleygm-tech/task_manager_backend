@@ -3,6 +3,7 @@ import {
   createDividendHolding,
   deleteDividendHolding,
   getDividendAssetTypes,
+  getDividendCdiRate,
   getDividendHolding,
   getDividendPortfolio,
   refreshDividendPrices,
@@ -16,6 +17,7 @@ const router = Router();
 
 router.use(requireAuth);
 router.get('/types', getDividendAssetTypes);
+router.get('/cdi-rate', getDividendCdiRate);
 router.get('/projection', getDividendProjection);
 router.get('/portfolio', getDividendPortfolio);
 router.post('/refresh-prices', refreshDividendPrices);
