@@ -104,6 +104,7 @@ Antes do primeiro uso, aplique a migração `sql/migrations/20261028_create_engl
 
 ### Despesas
 
+- `POST /api/expenses/fuel-calculator` — compara gasolina e álcool para carro ou moto e estima litros/gasto para a distância informada. Requer sessão autenticada.
 - `GET /api/expenses?type=compra&category=Mercado&month=2026-10&active=true&search=luz&page=1&limit=20` — lista despesas (`month` filtra só compras; fixas sempre aparecem)
 - `GET /api/expenses/categories` — categorias usadas e quantidade de despesas
 - `GET /api/expenses/summary?month=2026-10` — resumo do mês (fixas ativas + compras), comparação com o mês anterior, categoria com maior gasto, participação por categoria e gastos dia a dia
@@ -115,6 +116,10 @@ Antes do primeiro uso, aplique a migração `sql/migrations/20261028_create_engl
 Campos: `name` e `amount` (maior que zero, em BRL) e `expense_type` (`compra` ou `fixa`) são obrigatórios; `category` (padrão `Outros`), `notes` e `is_active` (padrão `true`) são opcionais. Compras exigem `expense_date` (`YYYY-MM-DD`); fixas exigem `due_day` (1 a 31) e representam um valor mensal recorrente — use `is_active:false` para pausá-las. Aplique `sql/migrations/20261029_create_expenses.sql` antes do primeiro uso.
 
 Exemplo de compra: `{"name":"Combustível","expense_type":"compra","category":"Transporte","amount":300,"expense_date":"2026-10-10"}`. Registre hotel e lanche da mesma forma, usando categorias como `Hospedagem` e `Alimentação`. O resumo retorna `fixed_total`, `purchases_total`, `total`, `comparison` (diferença e variação percentual; percentual `null` quando não há gastos no mês anterior), `top_category`, `by_category` (total, quantidade e percentual) e `daily_spending` (compras por dia, incluindo dias sem gastos; despesas fixas não entram nessa série).
+
+Para calcular combustível, envie `vehicle_model`, `vehicle_type` (`carro` ou `moto`), `fuel_type` (`gasolina` ou `alcool`) e os preços por litro de ambos em `fuel_prices`. `consumption_km_per_l` aceita o consumo de cada combustível; `distance_km` informa a distância para estimar litros e custo. Com os consumos dos dois combustíveis, a comparação usa o custo real por quilômetro; sem ambos, aplica a regra aproximada de 70%. O modelo não consulta automaticamente consumo ou compatibilidade: confirme se o veículo aceita álcool.
+
+Exemplo: `{"vehicle_model":"Honda CG 160","vehicle_type":"moto","fuel_type":"gasolina","fuel_prices":{"gasolina":6.19,"alcool":4.29},"consumption_km_per_l":{"gasolina":40,"alcool":30},"distance_km":1000}`. A resposta inclui o combustível recomendado, o preço de equilíbrio do álcool, estimativas por combustível e a economia estimada para a distância informada.
 
 ### Dividendos
 
