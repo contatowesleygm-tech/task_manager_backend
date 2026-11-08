@@ -115,6 +115,10 @@ Antes do primeiro uso, aplique a migração `sql/migrations/20261028_create_engl
 
 Campos: `name` e `amount` (maior que zero, em BRL) e `expense_type` (`compra` ou `fixa`) são obrigatórios; `category` (padrão `Outros`), `notes` e `is_active` (padrão `true`) são opcionais. Compras exigem `expense_date` (`YYYY-MM-DD`); fixas exigem `due_day` (1 a 31) e representam um valor mensal recorrente — use `is_active:false` para pausá-las. Aplique `sql/migrations/20261029_create_expenses.sql` antes do primeiro uso.
 
+### Histórico de percursos
+
+As rotas autenticadas `GET /api/expenses/daily-routes?page=1&limit=20` e `PUT /api/expenses/daily-routes/:date` listam e salvam o percurso de cada dia por usuário. Salvar novamente a mesma data atualiza o registro daquele dia. Aplique `sql/migrations/20261108_create_daily_route_days.sql` antes de usar o histórico. Cada registro guarda os trechos, veículo, preços e consumos usados na estimativa, além dos totais calculados pela API.
+
 Exemplo de compra: `{"name":"Combustível","expense_type":"compra","category":"Transporte","amount":300,"expense_date":"2026-10-10"}`. Registre hotel e lanche da mesma forma, usando categorias como `Hospedagem` e `Alimentação`. O resumo retorna `fixed_total`, `purchases_total`, `total`, `comparison` (diferença e variação percentual; percentual `null` quando não há gastos no mês anterior), `top_category`, `by_category` (total, quantidade e percentual) e `daily_spending` (compras por dia, incluindo dias sem gastos; despesas fixas não entram nessa série).
 
 Para calcular combustível, envie `vehicle_model`, `vehicle_type` (`carro` ou `moto`), `fuel_type` (`gasolina` ou `alcool`) e os preços por litro de ambos em `fuel_prices`. `consumption_km_per_l` aceita o consumo de cada combustível; `distance_km` informa a distância para estimar litros e custo. Com os consumos dos dois combustíveis, a comparação usa o custo real por quilômetro; sem ambos, aplica a regra aproximada de 70%. O modelo não consulta automaticamente consumo ou compatibilidade: confirme se o veículo aceita álcool.

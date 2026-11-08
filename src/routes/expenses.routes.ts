@@ -9,6 +9,7 @@ import {
   updateExpense,
 } from '../controllers/expenses.controller';
 import { calculateFuelCosts } from '../controllers/fuel-calculator.controller';
+import { listDailyRouteDays, saveDailyRouteDay } from '../controllers/daily-routes.controller';
 import { requireAuth } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -17,6 +18,8 @@ router.use(requireAuth);
 router.get('/summary', getExpensesSummary);
 router.get('/categories', listExpenseCategories);
 router.post('/fuel-calculator', calculateFuelCosts);
+router.get('/daily-routes', listDailyRouteDays);
+router.put('/daily-routes/:date', saveDailyRouteDay);
 router.get('/', listExpenses);
 router.post('/', createExpense);
 router.get('/:id', getExpense);
