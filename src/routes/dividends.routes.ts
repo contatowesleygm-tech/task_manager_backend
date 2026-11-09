@@ -5,6 +5,7 @@ import {
   getDividendAssetTypes,
   getDividendCdiRate,
   getDividendHolding,
+  getFixedIncomeHistory,
   getDividendPortfolio,
   refreshDividendPrices,
   getDividendProjection,
@@ -21,6 +22,7 @@ router.get('/cdi-rate', getDividendCdiRate);
 router.get('/projection', getDividendProjection);
 router.get('/portfolio', getDividendPortfolio);
 router.post('/refresh-prices', refreshDividendPrices);
+router.get('/:id/fixed-income-history', getFixedIncomeHistory);
 router.get('/', listDividendHoldings);
 router.post('/', createDividendHolding);
 router.get('/:id', getDividendHolding);
