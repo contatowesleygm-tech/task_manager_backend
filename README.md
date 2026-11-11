@@ -150,6 +150,8 @@ Exemplos: `{"ticker":"PETR4","asset_type":"acao","quantity":100,"average_price":
 
 Para ações brasileiras, 40% da nota combina indicadores de mercado de 1 ano (retornos de 3 e 12 meses, média de 200 dias, RSI, volatilidade e dividend yield) e 60% considera até 5 anos de retorno ajustado por proventos, comparação com CDI, volatilidade e queda máxima. Na parcela histórica, retorno anualizado frente ao CDI pesa até ±25 pontos, queda máxima ±15 e volatilidade ±10. Essa fonte não fornece balanços confiáveis para pontuar lucro, endividamento, ROE ou valuation; a etiqueta descreve o histórico de mercado, não a qualidade fundamental da empresa. Dados insuficientes recebem “Análise limitada”. Notas de 65 ou mais são favoráveis, 45–64 neutras, 30–44 merecem atenção e abaixo de 30 indicam evitar. As notas são quantitativas, dependem do período e dos dados disponíveis e não constituem recomendação de investimento.
 
+`GET /api/market/news` agrega notícias públicas de investimentos do Google Notícias (RSS), por classe de ativo, e atualiza o cache a cada 15 minutos. Use `?refresh=true` para solicitar uma atualização imediata. A página combina as notícias com as notas de mercado e gráficos já disponíveis; os sinais servem para acompanhamento e não determinam uma hora certa de compra ou venda nem constituem recomendação personalizada.
+
 ### Finanças
 
 - `GET /api/finances/summary` — separa ativos e passivos e calcula o patrimônio líquido em BRL

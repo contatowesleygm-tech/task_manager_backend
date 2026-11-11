@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { app } from './app';
 import { pool } from './config/database';
 import { startMarketRefresh } from './services/market/opportunities.service';
+import { startInvestmentNewsRefresh } from './services/market/investment-news.service';
 
 const port = Number(process.env.PORT ?? 3000);
 
@@ -12,6 +13,7 @@ async function start() {
     console.log(`Task Manager API disponível em http://localhost:${port}`);
   });
   startMarketRefresh();
+  startInvestmentNewsRefresh();
 }
 
 start().catch((error) => {

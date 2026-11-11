@@ -7,6 +7,7 @@ import {
   analyzeFiiPortfolio, getFixedIncomeBenchmarks, PortfolioInputError, simulateSwitch,
 } from '../services/market/portfolio-rebalance.service';
 import { assetClasses, profiles } from '../services/market/scoring';
+import { getInvestmentNews } from '../services/market/investment-news.service';
 
 const rateQuery = {
   cdi_percent: z.coerce.number().min(50).max(200).default(100),
@@ -147,6 +148,23 @@ export async function listOpportunities(req: Request, res: Response, next: NextF
   try {
     res.json(await getOpportunities(query.data.perfil, query.data.carteira === 'true' ? req.user!.id : undefined));
   } catch (error) {
+    next(error);
+  }
+}
+
+export async function listInvestmentNews(req: Request, res: Response, next: NextFunction) {
+  const refresh = req.query.refresh;
+  if (refresh !== undefined && refresh !== 'true' && refresh !== 'false') {
+    res.status(400).json({ error: 'Parâmetro refresh inválido.' });
+    return;
+  }
+  try {
+    res.json(await getInvestmentNews(refresh === 'true'));
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(502).json({ error: 'Não foi possível carregar notícias das fontes consultadas.' });
+      return;
+    }
     next(error);
   }
 }
