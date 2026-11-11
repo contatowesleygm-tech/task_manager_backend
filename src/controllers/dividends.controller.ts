@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { pool } from '../config/database';
 import {
   AUTO_QUOTE_TYPES,
+  B3_ASSET_TYPES,
   assetTypes,
   catalog,
   defaultFrequency,
@@ -11,7 +12,7 @@ import {
   isFiiLike,
   type AssetType,
 } from '../services/investment-types';
-import { getMarketQuote } from '../services/quote.service';
+import { getMarketAssetBasics, getMarketQuote } from '../services/quote.service';
 import { getBcbCdiRate } from '../services/market/bcb.service';
 import { buildFixedIncomeHistory, FixedIncomeHistoryError } from '../services/market/fixed-income-history.service';
 
@@ -149,6 +150,13 @@ const summarySchema = z.object({
     value => typeof value === 'string' && value.trim() === '' ? undefined : value,
     z.coerce.number().min(0).max(1000).optional()
   ),
+});
+
+const lookupParams = z.object({
+  ticker: z.string().trim().toUpperCase().min(1).max(20).regex(/^[A-Z0-9.=^-]+$/),
+});
+const lookupQuery = z.object({
+  asset_type: z.enum(assetTypes as [AssetType, ...AssetType[]]).default('fii'),
 });
 
 type Holding = {
@@ -421,6 +429,42 @@ async function applyQuote(id: string | number, userId: number, ticker: string, a
     [id, userId, quote.price]
   );
   return result.rows[0];
+}
+
+export async function lookupDividendAsset(req: Request, res: Response) {
+  const params = lookupParams.safeParse(req.params);
+  const query = lookupQuery.safeParse(req.query);
+  if (!params.success || !query.success) {
+    res.status(400).json({ error: 'Informe um ticker e tipo de ativo válidos.' });
+    return;
+  }
+
+  const { ticker } = params.data;
+  const { asset_type: assetType } = query.data;
+  if (!AUTO_QUOTE_TYPES.includes(assetType)) {
+    res.status(400).json({ error: 'Este tipo de ativo não tem consulta automática de mercado.' });
+    return;
+  }
+  if (B3_ASSET_TYPES.includes(assetType) && !/^[A-Z0-9]{4,7}$/.test(ticker)) {
+    res.status(400).json({ error: 'Informe um ticker válido da B3.' });
+    return;
+  }
+
+  try {
+    const basics = await getMarketAssetBasics(ticker, assetType);
+    res.json({
+      data: {
+        ticker,
+        asset_type: assetType,
+        current_price: basics.price,
+        dividend_per_share: basics.dividendPerShare,
+        price_updated_at: basics.date,
+        dividend_date: basics.dividendDate,
+      },
+    });
+  } catch {
+    res.status(502).json({ error: 'Não foi possível buscar os dados do ativo agora.' });
+  }
 }
 
 export async function refreshDividendPrices(req: Request, res: Response, next: NextFunction) {
