@@ -66,6 +66,15 @@ function incomeTaxRate(daysHeld: number, exempt: boolean): number {
   return 0.15;
 }
 
+function dailyRate(input: {
+  annualRate: number;
+  rateType: 'cdi' | 'prefixado';
+  cdiPercent: number;
+}): number {
+  const rate = Math.pow(1 + input.annualRate / 100, 1 / 252) - 1;
+  return input.rateType === 'prefixado' ? rate : rate * input.cdiPercent / 100;
+}
+
 async function getDailyCdiRates(from: Date, to: Date) {
   const key = `${isoDate(from)}:${isoDate(to)}`;
   const cached = dailyRatesCache.get(key);
@@ -112,11 +121,16 @@ async function getDailyCdiRates(from: Date, to: Date) {
 
 export async function buildFixedIncomeHistory(input: {
   principal: number;
+  rateType: 'cdi' | 'prefixado';
   cdiPercent: number;
+  fixedRatePercent: number;
   investmentDate: string;
+  maturityDate?: string | null;
+  expectedCdiRate: number;
   incomeTaxExempt: boolean;
 }) {
   const investmentDate = parseIsoDate(input.investmentDate);
+  const maturityDate = input.maturityDate ? parseIsoDate(input.maturityDate) : null;
   const today = new Date();
   const todayParts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo',
@@ -128,6 +142,9 @@ export async function buildFixedIncomeHistory(input: {
   const todayDate = new Date(Date.UTC(todayValue('year'), todayValue('month') - 1, todayValue('day')));
   if (investmentDate > todayDate) {
     throw new FixedIncomeHistoryError('A data do investimento não pode estar no futuro. Corrija a data no cadastro para consultar o histórico.', 400);
+  }
+  if (maturityDate && maturityDate < investmentDate) {
+    throw new FixedIncomeHistoryError('A data de vencimento não pode ser anterior à data do investimento.', 400);
   }
 
   const dailyRates = await getDailyCdiRates(investmentDate, todayDate);
@@ -146,8 +163,11 @@ export async function buildFixedIncomeHistory(input: {
     const asOfDateText = isoDate(asOfDate);
 
     while (rateIndex < dailyRates.length && dailyRates[rateIndex].date <= asOfDateText) {
-      const dailyRate = Math.pow(1 + dailyRates[rateIndex].annualRate / 100, 1 / 252) - 1;
-      balance *= 1 + dailyRate * input.cdiPercent / 100;
+      balance *= 1 + dailyRate({
+        annualRate: input.rateType === 'prefixado' ? input.fixedRatePercent : dailyRates[rateIndex].annualRate,
+        rateType: input.rateType,
+        cdiPercent: input.cdiPercent,
+      });
       rateIndex += 1;
     }
 
@@ -195,12 +215,82 @@ export async function buildFixedIncomeHistory(input: {
   }
 
   const current = months[months.length - 1];
+  let maturityEstimate: {
+    date: string;
+    days_held: number;
+    gross_balance: number;
+    accumulated_gain: number;
+    income_tax_rate: number;
+    estimated_tax: number;
+    net_balance: number;
+    is_projected: boolean;
+    projection_assumption: string;
+  } | null = null;
+  if (maturityDate) {
+    const isProjected = maturityDate > todayDate;
+    const lastActualDate = isProjected ? todayDate : maturityDate;
+    let maturityBalance = input.principal;
+    for (const point of dailyRates) {
+      if (point.date <= isoDate(investmentDate) || point.date > isoDate(lastActualDate)) continue;
+      const annualRate = input.rateType === 'prefixado'
+        ? input.fixedRatePercent
+        : point.annualRate;
+      maturityBalance *= 1 + dailyRate({
+        annualRate,
+        rateType: input.rateType,
+        cdiPercent: input.cdiPercent,
+      });
+    }
+
+    if (isProjected) {
+      const projectedDailyRate = dailyRate({
+        annualRate: input.rateType === 'prefixado' ? input.fixedRatePercent : input.expectedCdiRate,
+        rateType: input.rateType,
+        cdiPercent: input.cdiPercent,
+      });
+      const lastRecordedRate = dailyRates[dailyRates.length - 1];
+      const lastRecordedDate = lastRecordedRate ? parseIsoDate(lastRecordedRate.date) : investmentDate;
+      const projectionStartDate = lastRecordedDate > todayDate
+        ? todayDate
+        : lastRecordedDate < investmentDate
+          ? investmentDate
+          : lastRecordedDate;
+      const cursor = new Date(projectionStartDate.getTime());
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+      while (cursor <= maturityDate) {
+        const weekday = cursor.getUTCDay();
+        if (weekday !== 0 && weekday !== 6) maturityBalance *= 1 + projectedDailyRate;
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+    }
+
+    const daysHeld = Math.max(0, Math.floor((maturityDate.getTime() - investmentDate.getTime()) / 86_400_000));
+    const gain = Math.max(0, maturityBalance - input.principal);
+    const taxRate = incomeTaxRate(daysHeld, input.incomeTaxExempt);
+    const estimatedTax = round2(gain * taxRate);
+    maturityEstimate = {
+      date: isoDate(maturityDate),
+      days_held: daysHeld,
+      gross_balance: round2(maturityBalance),
+      accumulated_gain: round2(gain),
+      income_tax_rate: taxRate,
+      estimated_tax: estimatedTax,
+      net_balance: round2(maturityBalance - estimatedTax),
+      is_projected: isProjected,
+      projection_assumption: input.rateType === 'prefixado'
+        ? `taxa prefixada de ${input.fixedRatePercent}% a.a., considerando dias úteis sem feriados futuros`
+        : `CDI estimado em ${input.expectedCdiRate}% a.a. × ${input.cdiPercent}% do CDI, considerando dias úteis sem feriados futuros`,
+    };
+  }
   return {
     investment_date: input.investmentDate,
+    maturity_date: input.maturityDate ?? null,
     as_of_date: isoDate(todayDate),
     cdi_reference_date: dailyRates[dailyRates.length - 1]?.date ?? input.investmentDate,
     applied_amount: round2(input.principal),
-    cdi_percent: input.cdiPercent,
+    rate_type: input.rateType,
+    cdi_percent: input.rateType === 'cdi' ? input.cdiPercent : null,
+    fixed_rate_percent: input.rateType === 'prefixado' ? input.fixedRatePercent : null,
     income_tax_exempt: input.incomeTaxExempt,
     cdi_source: 'Banco Central do Brasil (SGS 4389), CDI diário anualizado',
     current: current ? {
@@ -216,6 +306,7 @@ export async function buildFixedIncomeHistory(input: {
       estimated_tax: 0,
       net_balance: round2(input.principal),
     },
+    maturity_estimate: maturityEstimate,
     months,
     years,
   };

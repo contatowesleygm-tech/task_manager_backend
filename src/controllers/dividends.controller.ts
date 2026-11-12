@@ -23,9 +23,11 @@ const intervalByFrequency: Record<(typeof frequencies)[number], number> = {
 const columns = `id, ticker, name, asset_type, fii_segment, quantity::float8 AS quantity,
                  dividend_per_share::float8 AS dividend_per_share, frequency, reference_month,
                  average_price::float8 AS average_price, current_price::float8 AS current_price,
+                 rate_type, fixed_rate_percent::float8 AS fixed_rate_percent,
                  cdi_percent::float8 AS cdi_percent,
                  applied_amount::float8 AS applied_amount,
                  investment_date::text AS investment_date,
+                 maturity_date::text AS maturity_date,
                  income_tax_exempt,
                  auto_price, price_updated_at,
                  ROUND(CASE WHEN asset_type = 'renda_fixa' THEN COALESCE(NULLIF(applied_amount, 0), quantity * average_price, 0)
@@ -53,6 +55,8 @@ const fields = {
   is_active: z.coerce.boolean(),
   notes: z.string().trim().max(2000).nullable().optional(),
   cdi_percent: z.coerce.number().min(0).max(1000).optional(),
+  fixed_rate_percent: z.coerce.number().min(0).max(1000).optional(),
+  rate_type: z.enum(['cdi', 'prefixado']),
   applied_amount: z.coerce.number().min(0).max(999_999_999_999).optional(),
   investment_date: z.string().date()
     .refine(value => value <= new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date()), {
@@ -60,6 +64,7 @@ const fields = {
     })
     .nullable()
     .optional(),
+  maturity_date: z.string().date().nullable().optional(),
   income_tax_exempt: z.coerce.boolean().optional(),
 };
 
@@ -67,14 +72,22 @@ function normalizeFixedIncomePayload<T extends Record<string, any>>(payload: T |
   if (!payload || typeof payload !== 'object') return (payload ?? {}) as T;
   const normalized = { ...payload } as Record<string, any>;
   const cdiPercent = normalized.cdi_percent ?? normalized.cdi ?? normalized.cdi_percentual ?? normalized.percentual_cdi;
+  const fixedRatePercent = normalized.fixed_rate_percent ?? normalized.fixedRatePercent ?? normalized.taxa_prefixada;
   const appliedAmount = normalized.applied_amount ?? normalized.valor_aplicado ?? normalized.valor_investido ?? normalized.invested_amount;
   const investmentDate = normalized.investment_date ?? normalized.data_investimento ?? normalized.investmentDate;
+  const maturityDate = Object.hasOwn(normalized, 'maturity_date')
+    ? normalized.maturity_date
+    : normalized.data_vencimento ?? normalized.maturityDate;
   if (cdiPercent === undefined) delete normalized.cdi_percent;
   else normalized.cdi_percent = cdiPercent;
   if (appliedAmount === undefined) delete normalized.applied_amount;
   else normalized.applied_amount = appliedAmount;
   if (investmentDate === undefined) delete normalized.investment_date;
   else normalized.investment_date = investmentDate;
+  if (fixedRatePercent === undefined) delete normalized.fixed_rate_percent;
+  else normalized.fixed_rate_percent = fixedRatePercent;
+  if (maturityDate === undefined) delete normalized.maturity_date;
+  else normalized.maturity_date = maturityDate;
   return normalized as T;
 }
 
@@ -94,19 +107,28 @@ const createSchema = z.object({
   is_active: fields.is_active.default(true),
   notes: fields.notes,
   cdi_percent: fields.cdi_percent,
+  fixed_rate_percent: fields.fixed_rate_percent,
+  rate_type: fields.rate_type.default('cdi'),
   applied_amount: fields.applied_amount,
   investment_date: fields.investment_date,
+  maturity_date: fields.maturity_date,
   income_tax_exempt: z.coerce.boolean().default(false),
 }).superRefine((data, context) => {
   if (data.asset_type !== 'renda_fixa') return;
   if (data.applied_amount == null || data.applied_amount <= 0) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['applied_amount'], message: 'Informe um valor aplicado maior que zero.' });
   }
-  if (data.cdi_percent == null || data.cdi_percent <= 0) {
+  if (data.rate_type === 'cdi' && (data.cdi_percent == null || data.cdi_percent <= 0)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['cdi_percent'], message: 'Informe um percentual do CDI maior que zero.' });
+  }
+  if (data.rate_type === 'prefixado' && (data.fixed_rate_percent == null || data.fixed_rate_percent <= 0)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['fixed_rate_percent'], message: 'Informe uma taxa prefixada maior que zero.' });
   }
   if (!data.investment_date) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['investment_date'], message: 'Informe a data do investimento.' });
+  }
+  if (data.maturity_date && data.investment_date && data.maturity_date < data.investment_date) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['maturity_date'], message: 'O vencimento não pode ser anterior à data do investimento.' });
   }
 });
 
@@ -125,11 +147,21 @@ const updateSchema = z.object({
   payment_day: fields.payment_day.optional(),
   is_active: fields.is_active.optional(),
   notes: fields.notes,
+  rate_type: fields.rate_type.optional(),
   cdi_percent: fields.cdi_percent,
+  fixed_rate_percent: fields.fixed_rate_percent,
   applied_amount: fields.applied_amount,
   investment_date: fields.investment_date,
+  maturity_date: fields.maturity_date,
   income_tax_exempt: fields.income_tax_exempt,
-}).refine(d => Object.keys(d).length > 0, { message: 'Informe ao menos um campo para atualizar.' });
+}).superRefine((data, context) => {
+  if (Object.keys(data).length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Informe ao menos um campo para atualizar.' });
+  }
+  if (data.maturity_date && data.investment_date && data.maturity_date < data.investment_date) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['maturity_date'], message: 'O vencimento não pode ser anterior à data do investimento.' });
+  }
+});
 
 const listSchema = z.object({
   asset_type: optionalFilter(fields.asset_type),
@@ -164,6 +196,29 @@ type Holding = {
   quantity: number; dividend_per_share: number;
   frequency: (typeof frequencies)[number]; reference_month: number; payment_day: number;
   cdi_percent?: number | null; applied_amount?: number | null; investment_date?: string | null;
+  rate_type?: 'cdi' | 'prefixado'; fixed_rate_percent?: number | null; maturity_date?: string | null;
+  income_tax_exempt?: boolean;
+};
+
+type ProjectionItem = {
+  holding_id: string;
+  ticker: string;
+  name: string | null;
+  asset_type: AssetType;
+  quantity?: number;
+  dividend_per_share?: number;
+  cdi_percent?: number | null;
+  rate_type?: 'cdi' | 'prefixado' | undefined;
+  fixed_rate_percent?: number | null;
+  maturity_date?: string | null;
+  applied_amount?: number | null;
+  investment_date?: string | null;
+  gross_amount: number;
+  tax_amount: number;
+  net_amount: number;
+  amount: number;
+  payment_date: string;
+  income_tax_rate: number;
   income_tax_exempt?: boolean;
 };
 
@@ -195,9 +250,11 @@ function fixedIncomeInvestmentDate(value?: string | null): Date | null {
 }
 
 function isFixedIncomeHolding(holding: Holding): boolean {
+  const rateIsValid = holding.rate_type === 'prefixado'
+    ? Number.isFinite(holding.fixed_rate_percent) && Number(holding.fixed_rate_percent) > 0
+    : Number.isFinite(holding.cdi_percent) && Number(holding.cdi_percent) > 0;
   return holding.asset_type === 'renda_fixa'
-    && Number.isFinite(holding.cdi_percent)
-    && Number(holding.cdi_percent) > 0
+    && rateIsValid
     && Number.isFinite(holding.applied_amount)
     && Number(holding.applied_amount) > 0
     && fixedIncomeInvestmentDate(holding.investment_date) !== null;
@@ -210,10 +267,15 @@ function monthlyFixedIncomeAmount(holding: Holding, year: number, month: number,
     return { gross_amount: 0, tax_amount: 0, net_amount: 0, income_tax_rate: 0 };
   }
   const principal = Number(holding.applied_amount ?? 0);
-  const cdiFraction = Number(holding.cdi_percent) / 100;
-  const monthlyEffectiveRate = Math.pow(1 + cdiRate / 100, cdiFraction / 12) - 1;
+  const monthlyEffectiveRate = holding.rate_type === 'prefixado'
+    ? Math.pow(1 + Number(holding.fixed_rate_percent) / 100, 1 / 12) - 1
+    : Math.pow(1 + cdiRate / 100, Number(holding.cdi_percent) / 1200) - 1;
   const monthStart = new Date(Date.UTC(year, month - 1, 1));
   const investmentDate = fixedIncomeInvestmentDate(holding.investment_date)!;
+  const maturityDate = fixedIncomeInvestmentDate(holding.maturity_date);
+  if (maturityDate && monthStart > maturityDate) {
+    return { gross_amount: 0, tax_amount: 0, net_amount: 0, income_tax_rate: 0 };
+  }
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   if (investmentDate.getTime() >= monthStart.getTime() + daysInMonth * 86_400_000) {
     return { gross_amount: 0, tax_amount: 0, net_amount: 0, income_tax_rate: 0 };
@@ -315,8 +377,9 @@ export async function getDividendProjection(req: Request, res: Response, next: N
     const result = await pool.query(
       `SELECT id, ticker, name, asset_type, quantity::float8 AS quantity,
               dividend_per_share::float8 AS dividend_per_share, frequency, reference_month, payment_day,
+              rate_type, fixed_rate_percent::float8 AS fixed_rate_percent,
               cdi_percent::float8 AS cdi_percent, applied_amount::float8 AS applied_amount,
-              investment_date::text AS investment_date, income_tax_exempt
+              investment_date::text AS investment_date, maturity_date::text AS maturity_date, income_tax_exempt
        FROM public.dividend_holdings WHERE user_id = $1 AND is_active ORDER BY ticker`,
       [req.user!.id]
     );
@@ -327,13 +390,7 @@ export async function getDividendProjection(req: Request, res: Response, next: N
       const year = startYear + Math.floor(zeroBased / 12);
       const month = (zeroBased % 12) + 1;
       const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-      const items: Array<{
-        holding_id: string; ticker: string; name: string | null; asset_type: AssetType;
-        quantity?: number; dividend_per_share?: number; cdi_percent?: number | null;
-        applied_amount?: number | null; investment_date?: string | null;
-        gross_amount: number; tax_amount: number; net_amount: number; amount: number; payment_date: string;
-        income_tax_rate: number;
-      }> = holdings.flatMap(h => {
+      const items: ProjectionItem[] = holdings.flatMap<ProjectionItem>(h => {
         if (isFixedIncomeHolding(h)) {
           const fixedIncome = monthlyFixedIncomeAmount(h, year, month, cdiRate);
           if (fixedIncome.net_amount <= 0) return [];
@@ -344,8 +401,11 @@ export async function getDividendProjection(req: Request, res: Response, next: N
             asset_type: h.asset_type,
             quantity: h.quantity,
             cdi_percent: h.cdi_percent,
+            rate_type: h.rate_type ?? 'cdi',
+            fixed_rate_percent: h.fixed_rate_percent,
             applied_amount: h.applied_amount,
             investment_date: h.investment_date,
+            maturity_date: h.maturity_date,
             income_tax_exempt: h.income_tax_exempt ?? false,
             gross_amount: fixedIncome.gross_amount,
             tax_amount: fixedIncome.tax_amount,
@@ -366,8 +426,11 @@ export async function getDividendProjection(req: Request, res: Response, next: N
           quantity: h.quantity,
           dividend_per_share: h.dividend_per_share,
           cdi_percent: undefined,
+          rate_type: undefined,
+          fixed_rate_percent: undefined,
           applied_amount: undefined,
           investment_date: undefined,
+          maturity_date: undefined,
           income_tax_exempt: false,
           gross_amount: grossAmount,
           tax_amount: 0,
@@ -572,10 +635,20 @@ export async function getFixedIncomeHistory(req: Request, res: Response, next: N
     res.status(400).json({ error: 'ID do investimento inválido.' });
     return;
   }
+  const parsedRate = z.preprocess(
+    value => value === undefined || value === '' ? undefined : value,
+    z.coerce.number().min(0).max(1000).optional()
+  ).safeParse(req.query.cdi_rate);
+  if (!parsedRate.success) {
+    res.status(400).json({ error: 'Informe uma taxa CDI anual válida para estimar o vencimento.' });
+    return;
+  }
   try {
     const result = await pool.query(
       `SELECT ticker, asset_type, applied_amount::float8 AS applied_amount,
+              rate_type, fixed_rate_percent::float8 AS fixed_rate_percent,
               cdi_percent::float8 AS cdi_percent, investment_date::text AS investment_date,
+              maturity_date::text AS maturity_date,
               income_tax_exempt
        FROM public.dividend_holdings
        WHERE id = $1 AND user_id = $2`,
@@ -586,18 +659,22 @@ export async function getFixedIncomeHistory(req: Request, res: Response, next: N
       return;
     }
     const holding = result.rows[0];
-    if (
-      holding.asset_type !== 'renda_fixa' || !holding.applied_amount || !holding.cdi_percent
-      || !holding.investment_date
-    ) {
-      res.status(400).json({ error: 'O histórico exige um investimento de renda fixa com valor, percentual do CDI e data válidos.' });
+    const rateIsValid = holding.rate_type === 'prefixado'
+      ? Number(holding.fixed_rate_percent) > 0
+      : Number(holding.cdi_percent) > 0;
+    if (holding.asset_type !== 'renda_fixa' || !holding.applied_amount || !rateIsValid || !holding.investment_date) {
+      res.status(400).json({ error: 'O histórico exige um investimento de renda fixa com valor, taxa e data válidos.' });
       return;
     }
     res.json({
       data: await buildFixedIncomeHistory({
         principal: Number(holding.applied_amount),
-        cdiPercent: Number(holding.cdi_percent),
+        rateType: holding.rate_type ?? 'cdi',
+        cdiPercent: Number(holding.cdi_percent ?? 0),
+        fixedRatePercent: Number(holding.fixed_rate_percent ?? 0),
         investmentDate: holding.investment_date,
+        maturityDate: holding.maturity_date,
+        expectedCdiRate: parsedRate.data ?? 13.65,
         incomeTaxExempt: Boolean(holding.income_tax_exempt),
       }),
     });
@@ -627,14 +704,15 @@ export async function createDividendHolding(req: Request, res: Response, next: N
       `INSERT INTO public.dividend_holdings
          (user_id, ticker, name, asset_type, fii_segment, quantity, dividend_per_share, frequency,
           reference_month, payment_day, is_active, notes, average_price, current_price, auto_price,
-          cdi_percent, applied_amount, investment_date, income_tax_exempt)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::date, $19)
+          rate_type, fixed_rate_percent, cdi_percent, applied_amount, investment_date, maturity_date, income_tax_exempt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::date, $21::date, $22)
        RETURNING ${columns}`,
       [
         req.user!.id, d.ticker, d.name ?? null, d.asset_type, fiiSegment, quantity,
         d.dividend_per_share, frequency, d.reference_month, d.payment_day, d.is_active, d.notes ?? null,
         d.average_price, d.current_price ?? null, autoPrice,
-        d.cdi_percent ?? null, d.applied_amount ?? null, d.investment_date ?? null, d.income_tax_exempt ?? false,
+        d.rate_type ?? 'cdi', d.fixed_rate_percent ?? null, d.cdi_percent ?? null,
+        d.applied_amount ?? null, d.investment_date ?? null, d.maturity_date ?? null, d.income_tax_exempt ?? false,
       ]
     );
     let holding = result.rows[0];
@@ -716,9 +794,16 @@ export async function updateDividendHolding(req: Request, res: Response, next: N
     if (d.auto_price !== undefined || (d.current_price !== undefined && d.current_price !== null)) {
       assign('auto_price', d.auto_price ?? false);
     }
+    if (d.rate_type !== undefined) {
+      assign('rate_type', d.rate_type);
+      if (d.rate_type === 'prefixado') assign('cdi_percent', null);
+      else assign('fixed_rate_percent', null);
+    }
     if (d.cdi_percent !== undefined) assign('cdi_percent', d.cdi_percent);
+    if (d.fixed_rate_percent !== undefined) assign('fixed_rate_percent', d.fixed_rate_percent);
     if (d.applied_amount !== undefined) assign('applied_amount', d.applied_amount);
     if (Object.hasOwn(d, 'investment_date')) assign('investment_date', d.investment_date ?? null);
+    if (Object.hasOwn(d, 'maturity_date')) assign('maturity_date', d.maturity_date ?? null);
     if (d.income_tax_exempt !== undefined) assign('income_tax_exempt', d.income_tax_exempt);
 
     const result = await pool.query(

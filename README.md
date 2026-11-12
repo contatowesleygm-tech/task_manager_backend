@@ -119,7 +119,7 @@ Campos: `name` e `amount` (maior que zero, em BRL) e `expense_type` (`compra` ou
 
 As rotas autenticadas `GET /api/expenses/daily-routes?page=1&limit=20` e `PUT /api/expenses/daily-routes/:date` listam e salvam o percurso de cada dia por usuário. Salvar novamente a mesma data atualiza o registro daquele dia. Aplique `sql/migrations/20261108_create_daily_route_days.sql` antes de usar o histórico. Cada registro guarda os trechos, veículo, preços e consumos usados na estimativa, além dos totais calculados pela API.
 
-Na área de Renda fixa, cada investimento pode consultar o histórico mensal e anual em `GET /api/dividends/:id/fixed-income-history`. O saldo é estimado usando a série diária histórica do CDI do Banco Central e o percentual CDI cadastrado. O IR é demonstrado como estimativa de resgate sobre o ganho acumulado, pelas alíquotas regressivas de 22,5% (até 180 dias), 20% (181–360), 17,5% (361–720) e 15% (acima de 720 dias). O cadastro permite marcar aplicações isentas de IR, como LCI/LCA. Aplique `sql/migrations/20261109_add_dividend_income_tax_exempt.sql` para habilitar o campo de tributação.
+Na área de Renda fixa, cada investimento pode consultar o histórico mensal e anual em `GET /api/dividends/:id/fixed-income-history`. O saldo histórico usa CDI diário do Banco Central para aplicações pós-fixadas e a taxa anual cadastrada para prefixados. Com `maturity_date`, a resposta inclui `maturity_estimate` (bruto, rendimento, IR e líquido); quando o vencimento é futuro, usa o CDI informado na simulação ou a taxa prefixada, contando dias úteis sem antecipar feriados futuros. O IR é uma estimativa pelas alíquotas regressivas de 22,5% (até 180 dias), 20% (181–360), 17,5% (361–720) e 15% (acima de 720 dias). O cadastro permite marcar aplicações isentas de IR, como LCI/LCA.
 
 Exemplo de compra: `{"name":"Combustível","expense_type":"compra","category":"Transporte","amount":300,"expense_date":"2026-10-10"}`. Registre hotel e lanche da mesma forma, usando categorias como `Hospedagem` e `Alimentação`. O resumo retorna `fixed_total`, `purchases_total`, `total`, `comparison` (diferença e variação percentual; percentual `null` quando não há gastos no mês anterior), `top_category`, `by_category` (total, quantidade e percentual) e `daily_spending` (compras por dia, incluindo dias sem gastos; despesas fixas não entram nessa série).
 
@@ -129,8 +129,11 @@ Exemplo: `{"vehicle_model":"Honda CG 160","vehicle_type":"moto","fuel_type":"gas
 
 ### Dividendos
 
+Para renda fixa, use `rate_type: "cdi"` com `cdi_percent` ou `rate_type: "prefixado"` com `fixed_rate_percent` (% a.a.). `maturity_date` (ou `data_vencimento`) é opcional; aplique `sql/migrations/20261111_add_fixed_income_maturity.sql`. A rota de histórico retorna os valores bruto, IR estimado e líquido no vencimento, com a premissa usada na projeção futura.
+
 - `GET /api/dividends/types` — lista os tipos de investimento aceitos (rótulo, frequência padrão e se há cotação automática)
 - `GET /api/dividends/cdi-rate` — retorna a taxa CDI anualizada mais recente do Banco Central (SGS 4389) e sua data de referência
+- `GET /api/dividends/:id/fixed-income-history?cdi_rate=13.65` — histórico e estimativa de resgate no vencimento; em vencimentos futuros, `cdi_rate` informa o CDI anual presumido (padrão 13,65%)
 - `GET /api/dividends/projection?from=2026-11&months=12&cdi_rate=13.65` — projeta quanto você recebe por mês e considera renda fixa com percentual do CDI (padrão: mês atual, 12 meses; máximo 36; `cdi_rate` usa a taxa anual do CDI em %). A tela busca a taxa atual ao abrir e permite edição manual para simulações.
 - `GET /api/dividends/portfolio` — total investido, valor atual, lucro/prejuízo e totais por tipo de ativo e por segmento de FII
 - `GET /api/dividends/lookup/:ticker?asset_type=fii` — consulta preço atual e último provento por cota/ação para preencher o formulário de novo ativo (Yahoo Finance; tipos com cotação automática)
@@ -282,6 +285,7 @@ Execute as migrações nesta ordem para preparar as colunas utilizadas pelas rot
 15. `sql/migrations/20261024_add_objective_step_activity.sql` (necessária para registrar conclusão de etapas de objetivos no histórico)
 16. `sql/migrations/20261031_create_subscriptions_and_payments.sql` (necessária para planos e método de pagamento no cadastro)
 17. `sql/migrations/20261105_add_financial_account_activation.sql` (necessária para ativar/desativar contas)
+18. `sql/migrations/20261111_add_fixed_income_maturity.sql` (necessária para as novas taxas e vencimento de renda fixa)
 
 As frequências aceitas são `dia`, `diaria`, `semana`, `semanal`, `mes` e `mensal`.
 
